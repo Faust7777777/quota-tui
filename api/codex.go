@@ -23,21 +23,18 @@ type CodexAuth struct {
 type CodexUsageResponse struct {
 	PlanType  string `json:"plan_type"`
 	RateLimit struct {
-		Allowed       bool `json:"allowed"`
-		LimitReached  bool `json:"limit_reached"`
-		PrimaryWindow struct {
-			UsedPercent        float64 `json:"used_percent"`
-			LimitWindowSeconds int     `json:"limit_window_seconds"`
-			ResetAfterSeconds  int     `json:"reset_after_seconds"`
-			ResetAt            int64   `json:"reset_at"`
-		} `json:"primary_window"`
-		SecondaryWindow struct {
-			UsedPercent        float64 `json:"used_percent"`
-			LimitWindowSeconds int     `json:"limit_window_seconds"`
-			ResetAfterSeconds  int     `json:"reset_after_seconds"`
-			ResetAt            int64   `json:"reset_at"`
-		} `json:"secondary_window"`
+		Allowed         bool                 `json:"allowed"`
+		LimitReached    bool                 `json:"limit_reached"`
+		PrimaryWindow   CodexRateLimitWindow `json:"primary_window"`
+		SecondaryWindow CodexRateLimitWindow `json:"secondary_window"`
 	} `json:"rate_limit"`
+}
+
+type CodexRateLimitWindow struct {
+	UsedPercent        float64 `json:"used_percent"`
+	LimitWindowSeconds int     `json:"limit_window_seconds"`
+	ResetAfterSeconds  int     `json:"reset_after_seconds"`
+	ResetAt            int64   `json:"reset_at"`
 }
 
 // CodexQuota holds the processed quota data for Codex CLI.
@@ -129,14 +126,18 @@ func parseTokenCount(line []byte) (tokenUsage, time.Time, bool) {
 }
 
 func getCodexCost(usage CodexUsageResponse) (float64, float64) {
+	return getCodexCostAt(usage, time.Now())
+}
+
+func getCodexCostAt(usage CodexUsageResponse, now time.Time) (float64, float64) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return 0, 0
 	}
 	sessionsDir := filepath.Join(home, ".codex", "sessions")
 
-	primaryStart := time.Unix(int64(usage.RateLimit.PrimaryWindow.ResetAt)-int64(usage.RateLimit.PrimaryWindow.LimitWindowSeconds), 0)
-	secondaryStart := time.Unix(int64(usage.RateLimit.SecondaryWindow.ResetAt)-int64(usage.RateLimit.SecondaryWindow.LimitWindowSeconds), 0)
+	primaryStart := codexWindowStart(usage.RateLimit.PrimaryWindow, now)
+	secondaryStart := codexWindowStart(usage.RateLimit.SecondaryWindow, now)
 
 	earliest := primaryStart
 	if secondaryStart.Before(earliest) {
@@ -240,6 +241,24 @@ func getCodexCost(usage CodexUsageResponse) (float64, float64) {
 	return calcCost(primaryTotals), calcCost(secondaryTotals)
 }
 
+func codexWindowResetAt(window CodexRateLimitWindow, now time.Time) time.Time {
+	if window.ResetAfterSeconds > 0 {
+		return now.Add(time.Duration(window.ResetAfterSeconds) * time.Second)
+	}
+	if window.ResetAt > 0 {
+		return time.Unix(window.ResetAt, 0)
+	}
+	return time.Time{}
+}
+
+func codexWindowStart(window CodexRateLimitWindow, now time.Time) time.Time {
+	resetAt := codexWindowResetAt(window, now)
+	if resetAt.IsZero() || window.LimitWindowSeconds <= 0 {
+		return time.Time{}
+	}
+	return resetAt.Add(-time.Duration(window.LimitWindowSeconds) * time.Second)
+}
+
 // readCodexAuth reads the Codex CLI auth tokens from auth.json.
 func readCodexAuth() (string, string, error) {
 	home, err := os.UserHomeDir()
@@ -304,7 +323,8 @@ func FetchCodexQuota() CodexQuota {
 		return CodexQuota{Error: fmt.Sprintf("parse error: %v", err)}
 	}
 
-	today, weekly := getCodexCost(usage)
+	now := time.Now()
+	today, weekly := getCodexCostAt(usage, now)
 
 	quota := CodexQuota{
 		PlanType:         usage.PlanType,
@@ -315,13 +335,8 @@ func FetchCodexQuota() CodexQuota {
 		WeeklyCostUSD:    weekly,
 	}
 
-	// Convert unix timestamps to time.Time
-	if usage.RateLimit.PrimaryWindow.ResetAt > 0 {
-		quota.PrimaryResetAt = time.Unix(usage.RateLimit.PrimaryWindow.ResetAt, 0)
-	}
-	if usage.RateLimit.SecondaryWindow.ResetAt > 0 {
-		quota.SecondaryResetAt = time.Unix(usage.RateLimit.SecondaryWindow.ResetAt, 0)
-	}
+	quota.PrimaryResetAt = codexWindowResetAt(usage.RateLimit.PrimaryWindow, now)
+	quota.SecondaryResetAt = codexWindowResetAt(usage.RateLimit.SecondaryWindow, now)
 
 	quota.PrimarySeverity = severityFromPercent(quota.PrimaryPercent)
 	quota.SecondarySeverity = severityFromPercent(quota.SecondaryPercent)
