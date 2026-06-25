@@ -1,0 +1,8 @@
+*.exe
+*.log
+python*.txt
+.env
+.env.*
+dist/
+build/
+coverage.out
