@@ -38,13 +38,26 @@ go build -o quota-tui.exe .
 
 ## Proxy
 
-By default, the app uses the normal system environment proxy settings and does not
-force a local proxy.
+By default, usage metadata requests go through `http://127.0.0.1:7890`.
 
-If your network requires a proxy, set `QUOTA_TUI_PROXY`:
+Use a different proxy:
 
 ```powershell
-$env:QUOTA_TUI_PROXY = "http://127.0.0.1:7890"
+$env:QUOTA_TUI_PROXY = "http://127.0.0.1:8888"
+go run .
+```
+
+Disable the forced proxy:
+
+```powershell
+$env:QUOTA_TUI_PROXY = "direct"
+go run .
+```
+
+Use normal `HTTP_PROXY` / `HTTPS_PROXY` environment variables:
+
+```powershell
+$env:QUOTA_TUI_PROXY = "env"
 go run .
 ```
 
